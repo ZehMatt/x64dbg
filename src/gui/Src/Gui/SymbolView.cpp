@@ -145,11 +145,21 @@ void SymbolView::loadWindowSettings()
     loadSymbolsSplitter(ui->mainSplitter, "mHSymbolsLogSplitter");
 }
 
-void SymbolView::setModuleSymbols(duint base, const std::vector<void*> & symbols)
+void SymbolView::invalidateSymbolSource(duint base)
 {
-    //TODO: reload actual symbol list, race conditions
-    GuiSymbolLogAdd(QString("[SymbolView] base: %1, count: %2\n").arg(ToPtrString(base)).arg(symbols.size()).toUtf8().constData());
-    mModuleSymbolMap[base] = symbols;
+    QMutexLocker lock(&mSymbolTable->mMutex);
+    for(auto mod : mSymbolTable->mModules)
+    {
+        if(mod == base)
+        {
+            mSymbolTable->mData.clear();
+            mSymbolTable->mData.shrink_to_fit();
+            mSymbolTable->setRowCount(mSymbolTable->mData.size());
+            GuiSymbolLogAdd(QString("[SymbolView] reload symbols for base %1\n").arg(ToPtrString(base)).toUtf8().constData());
+            // TODO: properly reload symbol list
+            break;
+        }
+    }
 }
 
 void SymbolView::setupContextMenu()
@@ -308,66 +318,37 @@ void SymbolView::clearSymbolLogSlot()
     ui->symbolLogEdit->clear();
 }
 
-void SymbolView::cbSymbolEnum(SYMBOLINFO* symbol, void* user)
-{
-    StdTable* symbolList = (StdTable*)user;
-    dsint index = symbolList->getRowCount();
-    symbolList->setRowCount(index + 1);
-    symbolList->setCellContent(index, 0, ToPtrString(symbol->addr));
-    if(symbol->decoratedSymbol)
-    {
-        symbolList->setCellContent(index, 2, symbol->decoratedSymbol);
-    }
-    else
-    {
-        symbolList->setCellContent(index, 2, QString());
-    }
-    if(symbol->undecoratedSymbol)
-    {
-        symbolList->setCellContent(index, 3, symbol->undecoratedSymbol);
-    }
-    else
-    {
-        symbolList->setCellContent(index, 3, QString());
-    }
-
-    if(symbol->isImported)
-    {
-        symbolList->setCellContent(index, 1, tr("Import"));
-    }
-    else
-    {
-        symbolList->setCellContent(index, 1, tr("Export"));
-    }
-}
-
 void SymbolView::moduleSelectionChanged(int index)
 {
     Q_UNUSED(index);
     setUpdatesEnabled(false);
 
-    /*mSearchListView->mList->setRowCount(0);
+    std::vector<duint> selectedModules;
     for(auto index : mModuleList->mCurList->getSelection())
     {
-        QString mod = mModuleList->mCurList->getCellContent(index, 1);
-        if(!mModuleBaseList.count(mod))
-            continue;
-        DbgSymbolEnumFromCache(mModuleBaseList[mod], cbSymbolEnum, mSearchListView->mList);
+        QString modBase = mModuleList->mCurList->getCellContent(index, 0);
+        duint wVA;
+        if(DbgFunctions()->ValFromString(modBase.toUtf8().constData(), &wVA))
+            selectedModules.push_back(wVA);
     }
-    mSearchListView->mList->reloadData();
-    mSearchListView->mList->setSingleSelection(0);
-    mSearchListView->mList->setTableOffset(0);
-    if(!mSearchListView->isSearchBoxLocked())
-        mSearchListView->mSearchBox->setText("");
-    else
-        mSearchListView->refreshSearchList();*/
 
-    QString modBase = mModuleList->mCurList->getCellContent(mModuleList->mCurList->getInitialSelection(), 0);
-    duint wVA;
-    if(!DbgFunctions()->ValFromString(modBase.toUtf8().constData(), &wVA))
-        return;
-    mSymbolTable->mData = mModuleSymbolMap[wVA];
+    std::vector<SYMBOLPTR> data;
+    for(auto base : selectedModules)
+    {
+        DbgSymbolEnum(base, [](const SYMBOLPTR * info, void* userdata)
+        {
+            ((std::vector<SYMBOLPTR>*)userdata)->push_back(*info);
+            return true; // TODO: allow aborting (enumeration in a separate thread)
+        }, &data);
+    }
+
+    mSymbolTable->mMutex.lock();
+    mSymbolTable->mModules = std::move(selectedModules);
+    mSymbolTable->mData = std::move(data);
     mSymbolTable->setRowCount(mSymbolTable->mData.size());
+    mSymbolTable->mMutex.unlock();
+    mSymbolTable->setSingleSelection(0);
+    mSymbolTable->setTableOffset(0);
     mSymbolTable->reloadData();
 
     setUpdatesEnabled(true);

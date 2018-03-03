@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AbstractStdTable.h"
+#include <QMutex>
 
 class ZehSymbolTable : public AbstractStdTable
 {
@@ -15,7 +16,9 @@ public:
     friend class SymbolView;
 
 private:
-    std::vector<void*> mData;
+    std::vector<duint> mModules;
+    std::vector<SYMBOLPTR> mData;
+    QMutex mMutex;
 
     enum
     {

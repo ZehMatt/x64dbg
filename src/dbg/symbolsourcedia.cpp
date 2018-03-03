@@ -14,6 +14,8 @@ SymbolSourceDIA::SymbolSourceDIA()
 SymbolSourceDIA::~SymbolSourceDIA()
 {
     cancelLoading();
+    if(_imageBase)
+        GuiInvalidateSymbolSource(_imageBase);
 }
 
 static void SetThreadDescription(HANDLE hThread, WString name)
@@ -38,6 +40,7 @@ bool SymbolSourceDIA::loadPDB(const std::string & path, duint imageBase, duint i
         _imageSize = imageSize;
         _imageBase = imageBase;
         _requiresShutdown = false;
+        _symbolsLoaded = false;
         _loadCounter.store(2);
         _symbolsThread = CreateThread(nullptr, 0, [](LPVOID thisPtr) -> DWORD
         {
@@ -75,17 +78,25 @@ bool SymbolSourceDIA::cancelLoading()
     {
         WaitForSingleObject(_symbolsThread, INFINITE);
         CloseHandle(_symbolsThread);
+        _symbolsThread = nullptr;
     }
     if(_sourceLinesThread)
     {
         WaitForSingleObject(_sourceLinesThread, INFINITE);
         CloseHandle(_sourceLinesThread);
+        _sourceLinesThread = nullptr;
     }
     return true;
 }
 
 void SymbolSourceDIA::loadPDBAsync()
 {
+}
+
+template<size_t Count>
+static bool startsWith(const char* str, const char(&prefix)[Count])
+{
+    return strncmp(str, prefix, Count - 1) == 0;
 }
 
 bool SymbolSourceDIA::loadSymbolsAsync()
@@ -110,6 +121,15 @@ bool SymbolSourceDIA::loadSymbolsAsync()
         if(_requiresShutdown)
             return false;
 
+        if(sym.name.c_str()[0] == 0x7F)
+            return true;
+
+#define filter(prefix) if(startsWith(sym.name.c_str(), prefix)) return true
+        filter("__imp__");
+        filter("__NULL_IMPORT_DESCRIPTOR");
+        filter("__IMPORT_DESCRIPTOR_");
+#undef filter
+
         if(sym.type == DiaSymbolType::PUBLIC ||
         sym.type == DiaSymbolType::FUNCTION ||
         sym.type == DiaSymbolType::LABEL ||
@@ -120,7 +140,7 @@ bool SymbolSourceDIA::loadSymbolsAsync()
             symInfo.undecoratedName = sym.undecoratedName;
             symInfo.size = sym.size;
             symInfo.disp = sym.disp;
-            symInfo.va = _imageBase + sym.virtualAddress;
+            symInfo.rva = sym.virtualAddress;
             symInfo.publicSymbol = sym.publicSymbol;
 
             // Check if we already have it inside, private symbols have priority over public symbols.
@@ -188,6 +208,7 @@ bool SymbolSourceDIA::loadSymbolsAsync()
             _symNameMap[i] = nameIndex;
         }
         std::sort(_symNameMap.begin(), _symNameMap.end());
+        _symbolsLoaded = true;
     }
 
     DWORD ms = GetTickCount() - loadStart;
@@ -195,17 +216,7 @@ bool SymbolSourceDIA::loadSymbolsAsync()
 
     GuiSymbolLogAdd(StringUtils::sprintf("[%p] Loaded %d symbols in %.03fs\n", _imageBase, _symAddrs.size(), secs).c_str());
 
-    //TODO: make beautiful
-    ListInfo blub;
-    blub.count = _symAddrs.size();
-    blub.size = blub.count * sizeof(void*);
-    std::vector<SymbolInfo*> fuck;
-    fuck.resize(_symAddrs.size());
-    size_t i = 0;
-    for(auto it = _symAddrs.begin(); it != _symAddrs.end(); ++it)
-        fuck[i++] = &_symData[it->second];
-    blub.data = fuck.data();
-    GuiSetModuleSymbols(_imageBase, &blub);
+    GuiInvalidateSymbolSource(_imageBase);
 
     GuiUpdateAllViews();
 
@@ -340,7 +351,7 @@ bool SymbolSourceDIA::findSymbolExactOrLower(duint rva, SymbolInfo & symInfo)
     if(it != _symAddrs.end())
     {
         symInfo = _symData[it->second];
-        symInfo.disp = (int32_t)(rva - (symInfo.va - _imageBase));
+        symInfo.disp = (int32_t)(rva - symInfo.rva);
         return true;
     }
 
@@ -350,6 +361,8 @@ bool SymbolSourceDIA::findSymbolExactOrLower(duint rva, SymbolInfo & symInfo)
 void SymbolSourceDIA::enumSymbols(const CbEnumSymbol & cbEnum)
 {
     ScopedSpinLock lock(_lockSymbols);
+    if(!_symbolsLoaded)
+        return;
 
     for(auto & it : _symAddrs)
     {
@@ -394,6 +407,8 @@ ForwardIt binary_find(ForwardIt first, ForwardIt last, const T & value, Compare 
 bool SymbolSourceDIA::findSymbolByName(const std::string & name, SymbolInfo & symInfo, bool caseSensitive)
 {
     ScopedSpinLock lock(_lockSymbols);
+    if(!_symbolsLoaded)
+        return false;
 
     NameIndex find;
     find.name = name.c_str();
@@ -435,6 +450,8 @@ bool SymbolSourceDIA::findSymbolsByPrefix(const std::string & prefix, const std:
     } prefixCmp(prefix.size());
 
     ScopedSpinLock lock(_lockSymbols);
+    if(!_symbolsLoaded)
+        return false;
 
     NameIndex find;
     find.name = prefix.c_str();

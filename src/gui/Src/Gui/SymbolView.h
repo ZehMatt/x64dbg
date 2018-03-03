@@ -25,7 +25,7 @@ public:
     void saveWindowSettings();
     void loadWindowSettings();
 
-    void setModuleSymbols(duint base, const std::vector<void*> & symbols);
+    void invalidateSymbolSource(duint base);
 
 private slots:
     void updateStyle();
@@ -94,8 +94,6 @@ private:
     QAction* mFollowInMemMap;
     QAction* mLoadLib;
     QAction* mFreeLib;
-
-    std::map<duint, std::vector<void*>> mModuleSymbolMap;
 
     static void cbSymbolEnum(SYMBOLINFO* symbol, void* user);
 };

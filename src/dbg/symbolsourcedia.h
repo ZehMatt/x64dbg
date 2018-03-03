@@ -100,6 +100,7 @@ private:
     duint _imageBase;
     duint _imageSize;
     SpinLock _lockSymbols;
+    bool _symbolsLoaded = false;
     SpinLock _lockLines;
 
 private:

@@ -1,7 +1,8 @@
 #include "ZehSymbolTable.h"
 
 ZehSymbolTable::ZehSymbolTable(QWidget* parent)
-    : AbstractStdTable(parent)
+    : AbstractStdTable(parent),
+      mMutex(QMutex::Recursive)
 {
     auto charwidth = getCharWidth();
     //enableMultiSelection(true); //TODO
@@ -14,16 +15,27 @@ ZehSymbolTable::ZehSymbolTable(QWidget* parent)
 
 QString ZehSymbolTable::getCellContent(int r, int c)
 {
+    QMutexLocker lock(&mMutex);
     if(!isValidIndex(r, c))
         return QString();
     SYMBOLINFO info = {0};
-    DbgGetSymbolInfo(mData.at(r), &info);
+    DbgGetSymbolInfo(&mData.at(r), &info);
     switch(c)
     {
     case ColAddr:
         return ToPtrString(info.addr);
     case ColType:
-        return info.isImported ? tr("Import") : tr("Export");
+        switch(info.type)
+        {
+        case sym_import:
+            return tr("Import");
+        case sym_export:
+            return tr("Export");
+        case sym_symbol:
+            return tr("Symbol");
+        default:
+            __debugbreak();
+        }
     case ColDecorated:
         return info.decoratedSymbol;
     case ColUndecorated:
@@ -35,16 +47,18 @@ QString ZehSymbolTable::getCellContent(int r, int c)
 
 bool ZehSymbolTable::isValidIndex(int r, int c)
 {
+    QMutexLocker lock(&mMutex);
     return r >= 0 && r < mData.size() && c >= 0 && c <= ColUndecorated;
 }
 
 void ZehSymbolTable::sortRows(int column, bool ascending)
 {
-    std::stable_sort(mData.begin(), mData.end(), [column, ascending](void* a, void* b)
+    QMutexLocker lock(&mMutex);
+    std::stable_sort(mData.begin(), mData.end(), [column, ascending](const SYMBOLPTR & a, const SYMBOLPTR & b)
     {
         SYMBOLINFO ainfo, binfo;
-        DbgGetSymbolInfo(a, &ainfo);
-        DbgGetSymbolInfo(b, &binfo);
+        DbgGetSymbolInfo(&a, &ainfo);
+        DbgGetSymbolInfo(&b, &binfo);
         bool less;
         switch(column)
         {
@@ -52,7 +66,7 @@ void ZehSymbolTable::sortRows(int column, bool ascending)
             less = ainfo.addr < binfo.addr;
             break;
         case ColType:
-            less = ainfo.isImported < binfo.isImported;
+            less = ainfo.type < binfo.type;
             break;
         case ColDecorated:
             less = strcmp(ainfo.decoratedSymbol, binfo.decoratedSymbol) < 0;
