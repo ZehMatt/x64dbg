@@ -3,30 +3,46 @@
 #include "debugger.h"
 #include <algorithm>
 
+typedef BOOL(NTAPI* fnRtlQueryPerformanceFrequency)(PLARGE_INTEGER frequency);
+typedef BOOL(NTAPI* fnRtlQueryPerformanceCounter)(PLARGE_INTEGER performanceCount);
+
 SymbolSourceDIA::SymbolSourceDIA()
-    : _requiresShutdown(false),
-      _imageBase(0),
+    : _isOpen(false),
+      _requiresShutdown(false),
       _loadCounter(0),
-      _isOpen(false)
+      _imageBase(0),
+      _imageSize(0)
 {
 }
 
 SymbolSourceDIA::~SymbolSourceDIA()
 {
-    cancelLoading();
+    SymbolSourceDIA::cancelLoading();
     if(_imageBase)
         GuiInvalidateSymbolSource(_imageBase);
 }
 
-static void SetThreadDescription(HANDLE hThread, WString name)
+static void SetWin10ThreadDescription(HANDLE threadHandle, const WString & name)
 {
     typedef HRESULT(WINAPI * fnSetThreadDescription)(HANDLE hThread, PCWSTR lpThreadDescription);
 
-    fnSetThreadDescription fp = (fnSetThreadDescription)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadDescription");
+    fnSetThreadDescription fp = (fnSetThreadDescription)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
     if(!fp)
         return; // Only available on windows 10.
 
-    fp(hThread, name.c_str());
+    fp(threadHandle, name.c_str());
+}
+
+DWORD WINAPI SymbolSourceDIA::SymbolsThread(void* parameter)
+{
+    ((SymbolSourceDIA*)parameter)->loadSymbolsAsync();
+    return 0;
+}
+
+DWORD WINAPI SymbolSourceDIA::SourceLinesThread(void* parameter)
+{
+    ((SymbolSourceDIA*)parameter)->loadSourceLinesAsync();
+    return 0;
 }
 
 bool SymbolSourceDIA::loadPDB(const std::string & path, duint imageBase, duint imageSize, DiaValidationData_t* validationData)
@@ -42,18 +58,10 @@ bool SymbolSourceDIA::loadPDB(const std::string & path, duint imageBase, duint i
         _requiresShutdown = false;
         _symbolsLoaded = false;
         _loadCounter.store(2);
-        _symbolsThread = CreateThread(nullptr, 0, [](LPVOID thisPtr) -> DWORD
-        {
-            ((SymbolSourceDIA*)thisPtr)->loadSymbolsAsync();
-            return 0;
-        }, this, CREATE_SUSPENDED, nullptr);
-        SetThreadDescription(_symbolsThread, L"SymbolsThread");
-        _sourceLinesThread = CreateThread(nullptr, 0, [](LPVOID thisPtr) -> DWORD
-        {
-            ((SymbolSourceDIA*)thisPtr)->loadSourceLinesAsync();
-            return 0;
-        }, this, CREATE_SUSPENDED, nullptr);
-        SetThreadDescription(_sourceLinesThread, L"SourceLinesThread");
+        _symbolsThread = CreateThread(nullptr, 0, SymbolsThread, this, CREATE_SUSPENDED, nullptr);
+        SetWin10ThreadDescription(_symbolsThread, L"SymbolsThread");
+        _sourceLinesThread = CreateThread(nullptr, 0, SourceLinesThread, this, CREATE_SUSPENDED, nullptr);
+        SetWin10ThreadDescription(_sourceLinesThread, L"SourceLinesThread");
         ResumeThread(_symbolsThread);
         ResumeThread(_sourceLinesThread);
     }
@@ -110,8 +118,16 @@ bool SymbolSourceDIA::loadSymbolsAsync()
         return false;
     }
 
+    const auto fpRtlQueryPerformanceFrequency = (fnRtlQueryPerformanceFrequency)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlQueryPerformanceFrequency");
+    const auto fpRtlQueryPerformanceCounter = (fnRtlQueryPerformanceCounter)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlQueryPerformanceCounter");
+
     DWORD lastUpdate = 0;
-    DWORD loadStart = GetTickCount();
+    LARGE_INTEGER frequency, loadStart, loadEnd, microSecs;
+    if(fpRtlQueryPerformanceFrequency != nullptr && fpRtlQueryPerformanceCounter != nullptr)
+    {
+        fpRtlQueryPerformanceFrequency(&frequency);
+        fpRtlQueryPerformanceCounter(&loadStart);
+    }
 
     PDBDiaFile::Query_t query;
     query.collectSize = true;
@@ -211,10 +227,14 @@ bool SymbolSourceDIA::loadSymbolsAsync()
         _symbolsLoaded = true;
     }
 
-    DWORD ms = GetTickCount() - loadStart;
-    double secs = (double)ms / 1000.0;
+    if(fpRtlQueryPerformanceFrequency != nullptr && fpRtlQueryPerformanceCounter != nullptr)
+    {
+        fpRtlQueryPerformanceCounter(&loadEnd);
+        microSecs.QuadPart = ((loadEnd.QuadPart - loadStart.QuadPart) * 1000000LL) / frequency.QuadPart;
+        double secs = (double)microSecs.QuadPart / 1000000.0;
 
-    GuiSymbolLogAdd(StringUtils::sprintf("[%p] Loaded %d symbols in %.03fs\n", _imageBase, _symAddrs.size(), secs).c_str());
+        GuiSymbolLogAdd(StringUtils::sprintf("[%p] Loaded %d symbols in %.03fs\n", _imageBase, _symAddrs.size(), secs).c_str());
+    }
 
     GuiInvalidateSymbolSource(_imageBase);
 
@@ -234,7 +254,15 @@ bool SymbolSourceDIA::loadSourceLinesAsync()
         return false;
     }
 
-    DWORD lineLoadStart = GetTickCount();
+    const auto fpRtlQueryPerformanceFrequency = (fnRtlQueryPerformanceFrequency)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlQueryPerformanceFrequency");
+    const auto fpRtlQueryPerformanceCounter = (fnRtlQueryPerformanceCounter)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlQueryPerformanceCounter");
+
+    LARGE_INTEGER frequency, lineLoadStart, lineLoadEnd, microSecs;
+    if(fpRtlQueryPerformanceFrequency != nullptr && fpRtlQueryPerformanceCounter != nullptr)
+    {
+        fpRtlQueryPerformanceFrequency(&frequency);
+        fpRtlQueryPerformanceCounter(&lineLoadStart);
+    }
 
     const size_t rangeSize = 1024 * 1024;
 
@@ -295,10 +323,14 @@ bool SymbolSourceDIA::loadSourceLinesAsync()
     if(_requiresShutdown)
         return false;
 
-    DWORD ms = GetTickCount() - lineLoadStart;
-    double secs = (double)ms / 1000.0;
+    if(fpRtlQueryPerformanceFrequency != nullptr && fpRtlQueryPerformanceCounter != nullptr)
+    {
+        fpRtlQueryPerformanceCounter(&lineLoadEnd);
+        microSecs.QuadPart = ((lineLoadEnd.QuadPart - lineLoadStart.QuadPart) * 1000000LL) / frequency.QuadPart;
+        double secs = (double)microSecs.QuadPart / 1000000.0;
 
-    GuiSymbolLogAdd(StringUtils::sprintf("[%p] Loaded %d line infos in %.03fs\n", _imageBase, _lines.size(), secs).c_str());
+        GuiSymbolLogAdd(StringUtils::sprintf("[%p] Loaded %d line infos in %.03fs\n", _imageBase, _lines.size(), secs).c_str());
+    }
 
     GuiUpdateAllViews();
 
