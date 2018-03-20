@@ -102,6 +102,7 @@ SOURCES += \
     Src/Gui/SymbolView.cpp \
     Src/Gui/RegistersView.cpp \
     Src/BasicView/SearchListView.cpp \
+    Src/BasicView/SearchListViewSymbols.cpp \
     Src/BasicView/ReferenceView.cpp \
     Src/Gui/ThreadView.cpp \
     Src/Gui/SettingsDialog.cpp \
@@ -221,6 +222,7 @@ HEADERS += \
     Src/Gui/CPUStack.h \
     Src/Gui/SymbolView.h \
     Src/BasicView/SearchListView.h \
+    Src/BasicView/SearchListViewSymbols.h \
     Src/BasicView/ReferenceView.h \
     Src/Gui/ThreadView.h \
     Src/Gui/SettingsDialog.h \

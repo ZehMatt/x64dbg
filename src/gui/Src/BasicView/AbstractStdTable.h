@@ -69,12 +69,14 @@ public slots:
 protected:
     QString copyTable(const std::vector<int> & colWidths);
 
-    struct
+    struct SelectionData_t
     {
         int firstSelectedIndex = 0;
         int fromIndex = 0;
         int toIndex = 0;
-    } mSelection;
+    };
+
+    SelectionData_t mSelection;
 
     enum
     {

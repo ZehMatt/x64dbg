@@ -8,6 +8,7 @@
 #include "LineEditDialog.h"
 #include "BrowseDialog.h"
 #include "SearchListView.h"
+#include "SearchListViewSymbols.h"
 #include <QVBoxLayout>
 #include <QProcess>
 #include <QFileDialog>
@@ -23,13 +24,9 @@ SymbolView::SymbolView(QWidget* parent) : QWidget(parent), ui(new Ui::SymbolView
     mMainLayout->addWidget(ui->mainSplitter);
     setLayout(mMainLayout);
 
-    // Create symbol table
-    mSymbolTable = new ZehSymbolTable(this);
-
     // Create reference view
-    mSearchListView = new SearchListView(true, this, true);
+    mSearchListView = new SearchListViewSymbols(true, this, true);
     mSearchListView->mSearchStartCol = 1;
-    mSearchListView->setVisible(false);
 
     // Create module list
     mModuleList = new SearchListView(true, this);
@@ -49,25 +46,9 @@ SymbolView::SymbolView(QWidget* parent) : QWidget(parent), ui(new Ui::SymbolView
     mModuleList->mSearchList->addColumnAt(charwidth * 60, tr("Path"), true);
     mModuleList->mSearchList->loadColumnFromConfig("Module");
 
-    // Setup symbol list
-    mSearchListView->mList->enableMultiSelection(true);
-    mSearchListView->mList->addColumnAt(charwidth * 2 * sizeof(dsint) + 8, tr("Address"), true);
-    mSearchListView->mList->addColumnAt(charwidth * 6 + 8, tr("Type"), true);
-    mSearchListView->mList->addColumnAt(charwidth * 80, tr("Symbol"), true);
-    mSearchListView->mList->addColumnAt(2000, tr("Symbol (undecorated)"), true);
-    mSearchListView->mList->loadColumnFromConfig("Symbol");
-
-    // Setup search list
-    mSearchListView->mSearchList->enableMultiSelection(true);
-    mSearchListView->mSearchList->addColumnAt(charwidth * 2 * sizeof(dsint) + 8, tr("Address"), true);
-    mSearchListView->mSearchList->addColumnAt(charwidth * 6 + 8, tr("Type"), true);
-    mSearchListView->mSearchList->addColumnAt(charwidth * 80, tr("Symbol"), true);
-    mSearchListView->mSearchList->addColumnAt(2000, tr("Symbol (undecorated)"), true);
-    mSearchListView->mSearchList->loadColumnFromConfig("Symbol");
-
     // Setup list splitter
     ui->listSplitter->addWidget(mModuleList);
-    ui->listSplitter->addWidget(mSymbolTable);
+    ui->listSplitter->addWidget(mSearchListView);
 #ifdef _WIN64
     // mModuleList : mSymbolList = 40 : 100
     ui->listSplitter->setStretchFactor(0, 40);
@@ -145,11 +126,26 @@ void SymbolView::loadWindowSettings()
     loadSymbolsSplitter(ui->mainSplitter, "mHSymbolsLogSplitter");
 }
 
-void SymbolView::setModuleSymbols(duint base, const std::vector<void*> & symbols)
+void SymbolView::invalidateSymbolSource(duint base)
 {
-    //TODO: reload actual symbol list, race conditions
-    GuiSymbolLogAdd(QString("[SymbolView] base: %1, count: %2\n").arg(ToPtrString(base)).arg(symbols.size()).toUtf8().constData());
-    mModuleSymbolMap[base] = symbols;
+    QMutexLocker lock1(&mSearchListView->mList->mMutex);
+    QMutexLocker lock2(&mSearchListView->mSearchList->mMutex);
+    for(auto mod : mSearchListView->mList->mModules)
+    {
+        if(mod == base)
+        {
+            mSearchListView->mList->mData.clear();
+            mSearchListView->mList->mData.shrink_to_fit();
+            mSearchListView->mList->setRowCount(0);
+            mSearchListView->mSearchList->mData.clear();
+            mSearchListView->mSearchList->mData.shrink_to_fit();
+            mSearchListView->mSearchList->setRowCount(0);
+            mSearchListView->mSearchList->highlightText.clear();
+            GuiSymbolLogAdd(QString("[SymbolView] reload symbols for base %1\n").arg(ToPtrString(base)).toUtf8().constData());
+            // TODO: properly reload symbol list
+            break;
+        }
+    }
 }
 
 void SymbolView::setupContextMenu()
@@ -308,67 +304,44 @@ void SymbolView::clearSymbolLogSlot()
     ui->symbolLogEdit->clear();
 }
 
-void SymbolView::cbSymbolEnum(SYMBOLINFO* symbol, void* user)
-{
-    StdTable* symbolList = (StdTable*)user;
-    dsint index = symbolList->getRowCount();
-    symbolList->setRowCount(index + 1);
-    symbolList->setCellContent(index, 0, ToPtrString(symbol->addr));
-    if(symbol->decoratedSymbol)
-    {
-        symbolList->setCellContent(index, 2, symbol->decoratedSymbol);
-    }
-    else
-    {
-        symbolList->setCellContent(index, 2, QString());
-    }
-    if(symbol->undecoratedSymbol)
-    {
-        symbolList->setCellContent(index, 3, symbol->undecoratedSymbol);
-    }
-    else
-    {
-        symbolList->setCellContent(index, 3, QString());
-    }
-
-    if(symbol->isImported)
-    {
-        symbolList->setCellContent(index, 1, tr("Import"));
-    }
-    else
-    {
-        symbolList->setCellContent(index, 1, tr("Export"));
-    }
-}
-
 void SymbolView::moduleSelectionChanged(int index)
 {
     Q_UNUSED(index);
     setUpdatesEnabled(false);
 
-    /*mSearchListView->mList->setRowCount(0);
+    std::vector<duint> selectedModules;
     for(auto index : mModuleList->mCurList->getSelection())
     {
-        QString mod = mModuleList->mCurList->getCellContent(index, 1);
-        if(!mModuleBaseList.count(mod))
-            continue;
-        DbgSymbolEnumFromCache(mModuleBaseList[mod], cbSymbolEnum, mSearchListView->mList);
+        QString modBase = mModuleList->mCurList->getCellContent(index, 0);
+        duint wVA;
+        if(DbgFunctions()->ValFromString(modBase.toUtf8().constData(), &wVA))
+            selectedModules.push_back(wVA);
     }
-    mSearchListView->mList->reloadData();
+
+    std::vector<SYMBOLPTR> data;
+    for(auto base : selectedModules)
+    {
+        DbgSymbolEnum(base, [](const SYMBOLPTR * info, void* userdata)
+        {
+            ((std::vector<SYMBOLPTR>*)userdata)->push_back(*info);
+            return true; // TODO: allow aborting (enumeration in a separate thread)
+        }, &data);
+    }
+
+    mSearchListView->mList->mMutex.lock();
+    mSearchListView->mSearchList->mMutex.lock();
+    mSearchListView->mList->mModules = std::move(selectedModules);
+    mSearchListView->mList->mData = std::move(data);
+    mSearchListView->mList->setRowCount(mSearchListView->mList->mData.size());
+    mSearchListView->mSearchList->mMutex.unlock();
+    mSearchListView->mList->mMutex.unlock();
     mSearchListView->mList->setSingleSelection(0);
     mSearchListView->mList->setTableOffset(0);
+    mSearchListView->mList->reloadData();
     if(!mSearchListView->isSearchBoxLocked())
         mSearchListView->mSearchBox->setText("");
     else
-        mSearchListView->refreshSearchList();*/
-
-    QString modBase = mModuleList->mCurList->getCellContent(mModuleList->mCurList->getInitialSelection(), 0);
-    duint wVA;
-    if(!DbgFunctions()->ValFromString(modBase.toUtf8().constData(), &wVA))
-        return;
-    mSymbolTable->mData = mModuleSymbolMap[wVA];
-    mSymbolTable->setRowCount(mSymbolTable->mData.size());
-    mSymbolTable->reloadData();
+        mSearchListView->refreshSearchList();
 
     setUpdatesEnabled(true);
 }

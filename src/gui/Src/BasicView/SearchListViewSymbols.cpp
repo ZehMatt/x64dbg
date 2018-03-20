@@ -2,10 +2,10 @@
 #include <QHBoxLayout>
 #include <QSplitter>
 #include <QLabel>
-#include "SearchListView.h"
+#include "SearchListViewSymbols.h"
 #include "FlickerThread.h"
 
-SearchListView::SearchListView(bool EnableRegex, QWidget* parent, bool EnableLock) : QWidget(parent)
+SearchListViewSymbols::SearchListViewSymbols(bool EnableRegex, QWidget* parent, bool EnableLock) : QWidget(parent)
 {
     setContextMenuPolicy(Qt::CustomContextMenu);
 
@@ -20,8 +20,8 @@ SearchListView::SearchListView(bool EnableRegex, QWidget* parent, bool EnableLoc
         // Create list layout (contains both ListViews)
         {
             // Create reference & search list
-            mList = new SearchListViewTable();
-            mSearchList = new SearchListViewTable();
+            mList = new ZehSymbolTable();
+            mSearchList = new ZehSymbolTable();
             mSearchList->hide();
 
             // Vertical layout
@@ -115,11 +115,11 @@ SearchListView::SearchListView(bool EnableRegex, QWidget* parent, bool EnableLoc
     mList->setFocusProxy(mSearchBox);
 }
 
-SearchListView::~SearchListView()
+SearchListViewSymbols::~SearchListViewSymbols()
 {
 }
 
-bool SearchListView::findTextInList(SearchListViewTable* list, QString text, int row, int startcol, bool startswith)
+bool SearchListViewSymbols::findTextInList(ZehSymbolTable* list, QString text, int row, int startcol, bool startswith)
 {
     int count = list->getColumnCount();
     if(startcol + 1 > count)
@@ -150,9 +150,12 @@ bool SearchListView::findTextInList(SearchListViewTable* list, QString text, int
     return false;
 }
 
-void SearchListView::searchTextChanged(const QString & arg1)
+void SearchListViewSymbols::searchTextChanged(const QString & arg1)
 {
-    SearchListViewTable* mPrevList = NULL;
+    QMutexLocker lock1(&mList->mMutex);
+    QMutexLocker lock2(&mSearchList->mMutex);
+
+    ZehSymbolTable* mPrevList = NULL;
 
     // TODO: use mCurList ?
     QString mLastFirstColValue;
@@ -189,15 +192,16 @@ void SearchListView::searchTextChanged(const QString & arg1)
     }
 
     mSearchList->setRowCount(0);
+    mSearchList->mData.clear();
+    mSearchList->mData.reserve(mList->mData.size());
+    mSearchList->mModules = mList->mModules;
     int rows = mList->getRowCount();
-    int columns = mList->getColumnCount();
     for(int i = 0, j = 0; i < rows; i++)
     {
         if(findTextInList(mList, arg1, i, mSearchStartCol, false))
         {
             mSearchList->setRowCount(j + 1);
-            for(int k = 0; k < columns; k++)
-                mSearchList->setCellContent(j, k, mList->getCellContent(i, k));
+            mSearchList->mData.push_back(mList->mData.at(i));
             j++;
         }
     }
@@ -251,12 +255,12 @@ void SearchListView::searchTextChanged(const QString & arg1)
     }
 }
 
-void SearchListView::refreshSearchList()
+void SearchListViewSymbols::refreshSearchList()
 {
     searchTextChanged(mSearchBox->text());
 }
 
-void SearchListView::listContextMenu(const QPoint & pos)
+void SearchListViewSymbols::listContextMenu(const QPoint & pos)
 {
     QMenu wMenu(this);
     emit listContextMenuSignal(&wMenu);
@@ -270,28 +274,28 @@ void SearchListView::listContextMenu(const QPoint & pos)
     wMenu.exec(mCurList->mapToGlobal(pos));
 }
 
-void SearchListView::doubleClickedSlot()
+void SearchListViewSymbols::doubleClickedSlot()
 {
     emit enterPressedSignal();
 }
 
-void SearchListView::on_checkBoxRegex_stateChanged(int state)
+void SearchListViewSymbols::on_checkBoxRegex_stateChanged(int state)
 {
     Q_UNUSED(state);
     refreshSearchList();
 }
 
-void SearchListView::on_checkBoxLock_toggled(bool checked)
+void SearchListViewSymbols::on_checkBoxLock_toggled(bool checked)
 {
     mSearchBox->setDisabled(checked);
 }
 
-bool SearchListView::isSearchBoxLocked()
+bool SearchListViewSymbols::isSearchBoxLocked()
 {
     return mLockCheckbox->isChecked();
 }
 
-bool SearchListView::eventFilter(QObject* obj, QEvent* event)
+bool SearchListViewSymbols::eventFilter(QObject* obj, QEvent* event)
 {
     // Keyboard button press being sent to the QLineEdit
     if(obj == mSearchBox && event->type() == QEvent::KeyPress)
@@ -342,7 +346,7 @@ bool SearchListView::eventFilter(QObject* obj, QEvent* event)
     return QWidget::eventFilter(obj, event);
 }
 
-void SearchListView::searchSlot()
+void SearchListViewSymbols::searchSlot()
 {
     FlickerThread* thread = new FlickerThread(mSearchBox, this);
     connect(thread, SIGNAL(setStyleSheet(QString)), mSearchBox, SLOT(setStyleSheet(QString)));

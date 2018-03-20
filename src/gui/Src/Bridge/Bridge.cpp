@@ -840,10 +840,8 @@ void* Bridge::processMessage(GUIMSG type, void* param1, void* param2)
         emit updateTraceBrowser();
         break;
 
-    case GUI_SET_MODULE_SYMBOLS:
-        std::vector<void*> moduleSymbols;
-        BridgeList<void*>::ToVector((const ListInfo*)param2, moduleSymbols, false);
-        symbolView->setModuleSymbols(duint(param1), moduleSymbols);
+    case GUI_INVALIDATE_SYMBOL_SOURCE:
+        symbolView->invalidateSymbolSource(duint(param1));
         break;
     }
 

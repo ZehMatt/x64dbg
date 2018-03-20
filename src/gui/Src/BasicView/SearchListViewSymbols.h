@@ -1,33 +1,28 @@
-#ifndef SEARCHLISTVIEW_H
-#define SEARCHLISTVIEW_H
+#ifndef SEARCHLISTVIEWSYMBOLS_H
+#define SEARCHLISTVIEWSYMBOLS_H
 
 #include <QWidget>
 #include <QLineEdit>
 #include <QCheckBox>
-#include "SearchListViewTable.h"
+#include "ZehSymbolTable.h"
 #include "MenuBuilder.h"
 #include "ActionHelpers.h"
 
-namespace Ui
-{
-    class SearchListView;
-}
-
-class SearchListView : public QWidget, public ActionHelper<SearchListView>
+class SearchListViewSymbols : public QWidget, public ActionHelper<SearchListViewSymbols>
 {
     Q_OBJECT
 
 public:
-    explicit SearchListView(bool EnableRegex = true, QWidget* parent = 0, bool EnableLock = false);
-    ~SearchListView();
+    explicit SearchListViewSymbols(bool EnableRegex = true, QWidget* parent = 0, bool EnableLock = false);
+    ~SearchListViewSymbols();
 
-    SearchListViewTable* mList;
-    SearchListViewTable* mSearchList;
-    SearchListViewTable* mCurList;
+    ZehSymbolTable* mList;
+    ZehSymbolTable* mSearchList;
+    ZehSymbolTable* mCurList;
     QLineEdit* mSearchBox;
     int mSearchStartCol;
 
-    bool findTextInList(SearchListViewTable* list, QString text, int row, int startcol, bool startswith);
+    bool findTextInList(ZehSymbolTable* list, QString text, int row, int startcol, bool startswith);
     void refreshSearchList();
 
     bool isSearchBoxLocked();
@@ -54,4 +49,4 @@ private:
     QAction* mSearchAction;
 };
 
-#endif // SEARCHLISTVIEW_H
+#endif // SEARCHLISTVIEWSYMBOLS_H

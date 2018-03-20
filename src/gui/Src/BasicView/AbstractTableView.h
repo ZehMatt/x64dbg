@@ -75,7 +75,7 @@ public:
 
     // New Columns/New Size
     virtual void addColumnAt(int width, const QString & title, bool isClickable);
-    virtual void setRowCount(dsint count);
+    virtual void setRowCount(dsint count); // TODO: why is this virtual?
     virtual void deleteAllColumns();
     void setColTitle(int index, const QString & title);
     QString getColTitle(int index);
