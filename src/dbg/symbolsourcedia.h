@@ -1,6 +1,8 @@
 #ifndef _SYMBOLSOURCEDIA_H_
 #define _SYMBOLSOURCEDIA_H_
 
+#include "_global.h"
+
 #include "pdbdiafile.h"
 #include "symbolsourcebase.h"
 #include "sortedlru.h"
@@ -153,6 +155,9 @@ private:
     void loadPDBAsync();
     bool loadSymbolsAsync();
     bool loadSourceLinesAsync();
+
+    static DWORD WINAPI SymbolsThread(void* parameter);
+    static DWORD WINAPI SourceLinesThread(void* parameter);
 };
 
 #endif // _SYMBOLSOURCEPDB_H_
