@@ -275,78 +275,69 @@ static void ReadBaseRelocationTable(MODINFO & Info, ULONG_PTR FileMapVA)
     // Clear relocations
     Info.relocations.clear();
 
-    // Parse base relocation table
-    duint characteristics = GetPE32DataFromMappedFile(FileMapVA, 0, UE_CHARACTERISTICS);
-    if((characteristics & IMAGE_FILE_RELOCS_STRIPPED) == IMAGE_FILE_RELOCS_STRIPPED)
+    // Ignore files with relocation info stripped
+    if((Info.headers->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) == IMAGE_FILE_RELOCS_STRIPPED)
         return;
 
     // Get address and size of base relocation table
-    duint relocDirRva = GetPE32DataFromMappedFile(FileMapVA, 0, UE_RELOCATIONTABLEADDRESS);
-    duint relocDirSize = GetPE32DataFromMappedFile(FileMapVA, 0, UE_RELOCATIONTABLESIZE);
-    if(relocDirRva == 0 || relocDirSize == 0)
+    ULONG totalBytes;
+    auto baseRelocBlock = (PIMAGE_BASE_RELOCATION)RtlImageDirectoryEntryToData((PVOID)FileMapVA,
+                          FALSE,
+                          IMAGE_DIRECTORY_ENTRY_BASERELOC,
+                          &totalBytes);
+    if(baseRelocBlock == nullptr || totalBytes == 0 || (ULONG_PTR)baseRelocBlock + totalBytes > FileMapVA + Info.loadedSize)
         return;
 
-    auto relocDirOffset = (duint)ConvertVAtoFileOffsetEx(FileMapVA, Info.loadedSize, 0, relocDirRva, true, false);
-    if(!relocDirOffset || relocDirOffset + relocDirSize > Info.loadedSize)
+    // Until we reach the end of the relocation table
+    while(totalBytes > 0)
     {
-        dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid relocation directory for module %s%s...\n"), Info.name, Info.extension);
-        return;
-    }
-
-    auto read = [&](duint offset, void* dest, size_t size)
-    {
-        if(offset + size > Info.loadedSize)
-            return false;
-        memcpy(dest, (char*)FileMapVA + offset, size);
-        return true;
-    };
-
-    duint curPos = relocDirOffset;
-    // Until we reach the end of base relocation table
-    while(curPos < relocDirOffset + relocDirSize)
-    {
-        // Read base relocation block header
-        IMAGE_BASE_RELOCATION baseRelocBlock;
-        if(!read(curPos, &baseRelocBlock, sizeof(baseRelocBlock)))
+        ULONG blockSize = baseRelocBlock->SizeOfBlock;
+        if(blockSize == 0 || blockSize > totalBytes) // The loader allows incorrect relocation dir sizes/block counts, but it won't relocate the image
         {
-            dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid relocation block for module %s%s...\n"), Info.name, Info.extension);
+            dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid relocation block for module %s%s!\n"), Info.name, Info.extension);
             return;
         }
 
-        // For every entry in base relocation block
-        duint count = (baseRelocBlock.SizeOfBlock - 8) / 2;
-        for(duint i = 0; i < count; i++)
+        // Process the relocation block
+        totalBytes -= blockSize;
+        blockSize = (blockSize - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(USHORT);
+        PUSHORT nextOffset = (PUSHORT)((PCHAR)baseRelocBlock + sizeof(IMAGE_BASE_RELOCATION));
+
+        while(blockSize--)
         {
-            uint16 data = 0;
-            if(!read(curPos + 8 + 2 * i, &data, sizeof(uint16)))
+            const auto type = (UCHAR)((*nextOffset) >> 12);
+            const auto offset = (USHORT)(*nextOffset & 0xfff);
+
+            if(baseRelocBlock->VirtualAddress + offset > FileMapVA + HEADER_FIELD(Info.headers, SizeOfImage))
             {
-                dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid relocation entry for module %s%s...\n"), Info.name, Info.extension);
+                dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid relocation entry for module %s%s!\n"), Info.name, Info.extension);
                 return;
             }
-
-            auto type = (data & 0xF000) >> 12;
-            auto offset = data & 0x0FFF;
 
             switch(type)
             {
             case IMAGE_REL_BASED_HIGHLOW:
-                Info.relocations.push_back(MODRELOCATIONINFO{ baseRelocBlock.VirtualAddress + offset, (BYTE)type, 4 });
+                Info.relocations.push_back(MODRELOCATIONINFO{ baseRelocBlock->VirtualAddress + offset, type, sizeof(ULONG) });
                 break;
             case IMAGE_REL_BASED_DIR64:
-                Info.relocations.push_back(MODRELOCATIONINFO{ baseRelocBlock.VirtualAddress + offset, (BYTE)type, 8 });
+                Info.relocations.push_back(MODRELOCATIONINFO{ baseRelocBlock->VirtualAddress + offset, type, sizeof(ULONG64) });
                 break;
             case IMAGE_REL_BASED_HIGH:
             case IMAGE_REL_BASED_LOW:
             case IMAGE_REL_BASED_HIGHADJ:
-                Info.relocations.push_back(MODRELOCATIONINFO{ baseRelocBlock.VirtualAddress + offset, (BYTE)type, 2 });
+                Info.relocations.push_back(MODRELOCATIONINFO{ baseRelocBlock->VirtualAddress + offset, type, sizeof(USHORT) });
                 break;
             case IMAGE_REL_BASED_ABSOLUTE:
-            default:
+            case IMAGE_REL_BASED_RESERVED: // IMAGE_REL_BASED_SECTION; ignored by loader
+            case IMAGE_REL_BASED_MACHINE_SPECIFIC_7: // IMAGE_REL_BASED_REL32; ignored by loader
                 break;
+            default:
+                dprintf(QT_TRANSLATE_NOOP("DBG", "Illegal relocation type 0x%02X for module %s%s!\n"), type, Info.name, Info.extension);
+                return;
             }
+            ++nextOffset;
         }
-
-        curPos += baseRelocBlock.SizeOfBlock;
+        baseRelocBlock = (PIMAGE_BASE_RELOCATION)nextOffset;
     }
 
     std::sort(Info.relocations.begin(), Info.relocations.end(), [](MODRELOCATIONINFO const & a, MODRELOCATIONINFO const & b)
@@ -358,75 +349,14 @@ static void ReadBaseRelocationTable(MODINFO & Info, ULONG_PTR FileMapVA)
 //Useful information: http://www.debuginfo.com/articles/debuginfomatch.html
 void ReadDebugDirectory(MODINFO & Info, ULONG_PTR FileMapVA)
 {
-    //TODO: proper error handling and proper bounds checking
-    auto pnth = PIMAGE_NT_HEADERS(FileMapVA + GetPE32DataFromMappedFile(FileMapVA, 0, UE_PE_OFFSET));
-    auto & debugDataDir = pnth->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-
-    if(!debugDataDir.VirtualAddress || !debugDataDir.Size)
+    // Get the debug directory and its size
+    ULONG debugDirSize;
+    auto debugDir = (PIMAGE_DEBUG_DIRECTORY)RtlImageDirectoryEntryToData((PVOID)FileMapVA,
+                    FALSE,
+                    IMAGE_DIRECTORY_ENTRY_DEBUG,
+                    &debugDirSize);
+    if(debugDirSize == 0 || debugDir == nullptr)
         return;
-
-    auto debugDirOffset = (duint)ConvertVAtoFileOffsetEx(FileMapVA, Info.loadedSize, 0, debugDataDir.VirtualAddress, true, false);
-    if(!debugDirOffset || debugDirOffset + debugDataDir.Size > Info.loadedSize)
-    {
-        dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid debug directory for module %s%s...\n"), Info.name, Info.extension);
-        return;
-    }
-
-    IMAGE_DEBUG_DIRECTORY debugDir = { 0 };
-    memcpy(&debugDir, (char*)FileMapVA + debugDirOffset, sizeof(debugDir));
-
-    auto typeName = [](DWORD type)
-    {
-        switch(type)
-        {
-        case IMAGE_DEBUG_TYPE_UNKNOWN:
-            return "IMAGE_DEBUG_TYPE_UNKNOWN";
-        case IMAGE_DEBUG_TYPE_COFF:
-            return "IMAGE_DEBUG_TYPE_COFF";
-        case IMAGE_DEBUG_TYPE_CODEVIEW:
-            return "IMAGE_DEBUG_TYPE_CODEVIEW";
-        case IMAGE_DEBUG_TYPE_FPO:
-            return "IMAGE_DEBUG_TYPE_FPO";
-        case IMAGE_DEBUG_TYPE_MISC:
-            return "IMAGE_DEBUG_TYPE_MISC";
-        case IMAGE_DEBUG_TYPE_EXCEPTION:
-            return "IMAGE_DEBUG_TYPE_EXCEPTION";
-        case IMAGE_DEBUG_TYPE_FIXUP:
-            return "IMAGE_DEBUG_TYPE_FIXUP";
-        case IMAGE_DEBUG_TYPE_OMAP_TO_SRC:
-            return "IMAGE_DEBUG_TYPE_OMAP_TO_SRC";
-        case IMAGE_DEBUG_TYPE_OMAP_FROM_SRC:
-            return "IMAGE_DEBUG_TYPE_OMAP_FROM_SRC";
-        case IMAGE_DEBUG_TYPE_BORLAND:
-            return "IMAGE_DEBUG_TYPE_BORLAND";
-        case IMAGE_DEBUG_TYPE_RESERVED10:
-            return "IMAGE_DEBUG_TYPE_RESERVED10";
-        case IMAGE_DEBUG_TYPE_CLSID:
-            return "IMAGE_DEBUG_TYPE_CLSID";
-        // The following types aren't defined in older Windows SDKs, so just count up from here so we can still return the names for them
-        case(IMAGE_DEBUG_TYPE_CLSID + 1):
-            return "IMAGE_DEBUG_TYPE_VC_FEATURE";
-        case(IMAGE_DEBUG_TYPE_CLSID + 2):
-            return "IMAGE_DEBUG_TYPE_POGO"; // For anyone grepping this: /NOCOFFGRPINFO is the undocumented linker switch to get rid of this crap. You're welcome
-        case(IMAGE_DEBUG_TYPE_CLSID + 3):
-            return "IMAGE_DEBUG_TYPE_ILTCG";
-        case(IMAGE_DEBUG_TYPE_CLSID + 4):
-            return "IMAGE_DEBUG_TYPE_MPX";
-        case(IMAGE_DEBUG_TYPE_CLSID + 5):
-            return "IMAGE_DEBUG_TYPE_REPRO";
-        default:
-            return "unknown";
-        }
-    }(debugDir.Type);
-
-    /*dprintf("IMAGE_DEBUG_DIRECTORY:\nCharacteristics: %08X\nTimeDateStamp: %08X\nMajorVersion: %04X\nMinorVersion: %04X\nType: %s\nSizeOfData: %08X\nAddressOfRawData: %08X\nPointerToRawData: %08X\n",
-            debugDir.Characteristics, debugDir.TimeDateStamp, debugDir.MajorVersion, debugDir.MinorVersion, typeName, debugDir.SizeOfData, debugDir.AddressOfRawData, debugDir.PointerToRawData);*/
-
-    if(debugDir.Type != IMAGE_DEBUG_TYPE_CODEVIEW) //TODO: support other types (DBG)?
-    {
-        dprintf(QT_TRANSLATE_NOOP("DBG", "Unsupported debug type %s in module %s%s...\n"), typeName, Info.name, Info.extension);
-        return;
-    }
 
     struct CV_HEADER
     {
@@ -450,39 +380,122 @@ void ReadDebugDirectory(MODINFO & Info, ULONG_PTR FileMapVA)
         BYTE PdbFileName[1];
     };
 
-    auto codeViewOffset = (duint)ConvertVAtoFileOffsetEx(FileMapVA, Info.loadedSize, 0, debugDir.AddressOfRawData, true, false);;
-    if(!codeViewOffset)
+    const auto supported = [&Info](PIMAGE_DEBUG_DIRECTORY entry)
     {
-        dprintf(QT_TRANSLATE_NOOP("DBG", "Invalid debug directory for module %s%s...\n"), Info.name, Info.extension);
+        // Check for valid RVA
+        const auto offset = RvaToVa(0, Info.headers, entry->AddressOfRawData);
+        if(!offset)
+            return false;
+
+        // Check size is sane and end of data lies within the image
+        if(entry->SizeOfData < sizeof(CV_INFO_PDB20) /*smallest supported type*/ ||
+                entry->AddressOfRawData + entry->SizeOfData > HEADER_FIELD(Info.headers, SizeOfImage))
+            return false;
+
+        // Choose from one of our many supported types such as codeview
+        if(entry->Type == IMAGE_DEBUG_TYPE_CODEVIEW) // TODO: support other types (DBG)?
+        {
+            // Get the CV signature and do a final size check if it is valid
+            auto signature = *(DWORD*)(Info.fileMapVA + offset);
+            if(signature == '01BN')
+                return entry->SizeOfData >= sizeof(CV_INFO_PDB20) && entry->SizeOfData < sizeof(CV_INFO_PDB20) + DOS_MAX_PATH_LENGTH;
+            else if(signature == 'SDSR')
+                return entry->SizeOfData >= sizeof(CV_INFO_PDB70) && entry->SizeOfData < sizeof(CV_INFO_PDB70) + DOS_MAX_PATH_LENGTH;
+            else
+            {
+                dprintf(QT_TRANSLATE_NOOP("DBG", "Unknown CodeView signature %08X for module %s%s...\n"), signature, Info.name, Info.extension);
+                return false;
+            }
+        }
+        return false;
+    };
+
+    // Iterate over entries until we find a CV one or the end of the directory
+    PIMAGE_DEBUG_DIRECTORY entry = debugDir;
+    while(debugDirSize >= sizeof(IMAGE_DEBUG_DIRECTORY))
+    {
+        if(supported(entry))
+            break;
+
+        const auto typeName = [](DWORD type)
+        {
+            switch(type)
+            {
+            case IMAGE_DEBUG_TYPE_UNKNOWN:
+                return "IMAGE_DEBUG_TYPE_UNKNOWN";
+            case IMAGE_DEBUG_TYPE_COFF:
+                return "IMAGE_DEBUG_TYPE_COFF";
+            case IMAGE_DEBUG_TYPE_CODEVIEW:
+                return "IMAGE_DEBUG_TYPE_CODEVIEW";
+            case IMAGE_DEBUG_TYPE_FPO:
+                return "IMAGE_DEBUG_TYPE_FPO";
+            case IMAGE_DEBUG_TYPE_MISC:
+                return "IMAGE_DEBUG_TYPE_MISC";
+            case IMAGE_DEBUG_TYPE_EXCEPTION:
+                return "IMAGE_DEBUG_TYPE_EXCEPTION";
+            case IMAGE_DEBUG_TYPE_FIXUP:
+                return "IMAGE_DEBUG_TYPE_FIXUP";
+            case IMAGE_DEBUG_TYPE_OMAP_TO_SRC:
+                return "IMAGE_DEBUG_TYPE_OMAP_TO_SRC";
+            case IMAGE_DEBUG_TYPE_OMAP_FROM_SRC:
+                return "IMAGE_DEBUG_TYPE_OMAP_FROM_SRC";
+            case IMAGE_DEBUG_TYPE_BORLAND:
+                return "IMAGE_DEBUG_TYPE_BORLAND";
+            case IMAGE_DEBUG_TYPE_RESERVED10:
+                return "IMAGE_DEBUG_TYPE_RESERVED10";
+            case IMAGE_DEBUG_TYPE_CLSID:
+                return "IMAGE_DEBUG_TYPE_CLSID";
+            // The following types aren't defined in older Windows SDKs, so just count up from here so we can still return the names for them
+            case(IMAGE_DEBUG_TYPE_CLSID + 1):
+                return "IMAGE_DEBUG_TYPE_VC_FEATURE"; // How to kill: /NOVCFEATURE linker switch
+            case(IMAGE_DEBUG_TYPE_CLSID + 2):
+                return "IMAGE_DEBUG_TYPE_POGO"; // How to kill: /NOCOFFGRPINFO linker switch
+            case(IMAGE_DEBUG_TYPE_CLSID + 3):
+                return "IMAGE_DEBUG_TYPE_ILTCG";
+            case(IMAGE_DEBUG_TYPE_CLSID + 4):
+                return "IMAGE_DEBUG_TYPE_MPX";
+            case(IMAGE_DEBUG_TYPE_CLSID + 5):
+                return "IMAGE_DEBUG_TYPE_REPRO";
+            default:
+                return "unknown";
+            }
+        }(entry->Type);
+
+        /*dprintf("IMAGE_DEBUG_DIRECTORY:\nCharacteristics: %08X\nTimeDateStamp: %08X\nMajorVersion: %04X\nMinorVersion: %04X\nType: %s\nSizeOfData: %08X\nAddressOfRawData: %08X\nPointerToRawData: %08X\n",
+                debugDir->Characteristics, debugDir->TimeDateStamp, debugDir->MajorVersion, debugDir->MinorVersion, typeName, debugDir->SizeOfData, debugDir->AddressOfRawData, debugDir->PointerToRawData);*/
+
+        dprintf(QT_TRANSLATE_NOOP("DBG", "Skipping unsupported debug type %s in module %s%s...\n"), typeName, Info.name, Info.extension);
+        entry++;
+        debugDirSize -= sizeof(IMAGE_DEBUG_DIRECTORY);
+    }
+
+    if(!supported(entry))
+    {
+        dprintf(QT_TRANSLATE_NOOP("DBG", "Did not find any supported debug types in module %s%s!\n"), Info.name, Info.extension);
         return;
     }
 
-    //TODO: bounds checking with debugDir.SizeOfData
-
-    auto signature = *(DWORD*)(FileMapVA + codeViewOffset);
+    // At this point we know the entry is a valid CV one
+    auto cvData = (unsigned char*)(FileMapVA + RvaToVa(0, Info.headers, entry->AddressOfRawData));
+    auto signature = *(DWORD*)cvData;
     if(signature == '01BN')
     {
-        auto cv = (CV_INFO_PDB20*)(FileMapVA + codeViewOffset);
+        auto cv = (CV_INFO_PDB20*)cvData;
         Info.pdbSignature = StringUtils::sprintf("%X%X", cv->Signature, cv->Age);
-        Info.pdbFile = String((const char*)cv->PdbFileName);
+        Info.pdbFile = String((const char*)cv->PdbFileName, entry->SizeOfData - FIELD_OFFSET(CV_INFO_PDB20, PdbFileName));
         Info.pdbValidation.signature = cv->Signature;
         Info.pdbValidation.age = cv->Age;
     }
     else if(signature == 'SDSR')
     {
-        auto cv = (CV_INFO_PDB70*)(FileMapVA + codeViewOffset);
+        auto cv = (CV_INFO_PDB70*)cvData;
         Info.pdbSignature = StringUtils::sprintf("%08X%04X%04X%s%X",
                             cv->Signature.Data1, cv->Signature.Data2, cv->Signature.Data3,
                             StringUtils::ToHex(cv->Signature.Data4, 8).c_str(),
                             cv->Age);
-        Info.pdbFile = String((const char*)cv->PdbFileName);
+        Info.pdbFile = String((const char*)cv->PdbFileName, entry->SizeOfData - FIELD_OFFSET(CV_INFO_PDB70, PdbFileName));
         memcpy(&Info.pdbValidation.guid, &cv->Signature, sizeof(GUID));
         Info.pdbValidation.age = cv->Age;
-    }
-    else
-    {
-        dprintf(QT_TRANSLATE_NOOP("DBG", "Unknown debug directory signature %08X for module %s%s...\n"), signature, Info.name, Info.extension);
-        return;
     }
 
     //dprintf("%s%s pdbSignature: %s, pdbFile: \"%s\"\n", Info.name, Info.extension, Info.pdbSignature.c_str(), Info.pdbFile.c_str());
@@ -554,8 +567,9 @@ void GetModuleInfo(MODINFO & Info, ULONG_PTR FileMapVA)
     }
 
     // Enumerate all PE sections
-    Info.sections.clear();
     WORD sectionCount = Info.headers->FileHeader.NumberOfSections;
+    Info.sections.clear();
+    Info.sections.reserve(sectionCount);
     PIMAGE_SECTION_HEADER ntSection = IMAGE_FIRST_SECTION(Info.headers);
 
     for(WORD i = 0; i < sectionCount; i++)
