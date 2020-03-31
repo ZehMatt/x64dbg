@@ -51,38 +51,36 @@ bool cbDebugRunInternal(int argc, char* argv[])
     return true;
 }
 
+static bool StopFromInit = false;
+
 bool cbDebugInit(int argc, char* argv[])
 {
     if(IsArgumentsLessThan(argc, 2))
         return false;
 
-    EXCLUSIVE_ACQUIRE(LockDebugStartStop);
-    cbDebugStop(argc, argv);
-    ASSERT_TRUE(hDebugLoopThread == nullptr);
-
-    static char arg1[deflen] = "";
-    strcpy_s(arg1, argv[1]);
+    char processPath[deflen] = "";
+    strcpy_s(processPath, argv[1]);
     wchar_t szResolvedPath[MAX_PATH] = L"";
-    if(ResolveShortcut(GuiGetWindowHandle(), StringUtils::Utf8ToUtf16(arg1).c_str(), szResolvedPath, _countof(szResolvedPath)))
+    if(ResolveShortcut(GuiGetWindowHandle(), StringUtils::Utf8ToUtf16(processPath).c_str(), szResolvedPath, _countof(szResolvedPath)))
     {
         auto resolvedPathUtf8 = StringUtils::Utf16ToUtf8(szResolvedPath);
-        dprintf(QT_TRANSLATE_NOOP("DBG", "Resolved shortcut \"%s\"->\"%s\"\n"), arg1, resolvedPathUtf8.c_str());
-        strcpy_s(arg1, resolvedPathUtf8.c_str());
+        dprintf(QT_TRANSLATE_NOOP("DBG", "Resolved shortcut \"%s\"->\"%s\"\n"), processPath, resolvedPathUtf8.c_str());
+        strcpy_s(processPath, resolvedPathUtf8.c_str());
     }
-    if(!FileExists(arg1))
+    if(!FileExists(processPath))
     {
         dputs(QT_TRANSLATE_NOOP("DBG", "File does not exist!"));
         return false;
     }
-    auto arg1w = StringUtils::Utf8ToUtf16(arg1);
+    auto arg1w = StringUtils::Utf8ToUtf16(processPath);
     Handle hFile = CreateFileW(arg1w.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if(hFile == INVALID_HANDLE_VALUE)
     {
         dputs(QT_TRANSLATE_NOOP("DBG", "Could not open file!"));
         return false;
     }
-    GetFileNameFromHandle(hFile, arg1); //get full path of the file
-    dprintf(QT_TRANSLATE_NOOP("DBG", "Debugging: %s\n"), arg1);
+    GetFileNameFromHandle(hFile, processPath); //get full path of the file
+    dprintf(QT_TRANSLATE_NOOP("DBG", "Debugging: %s\n"), processPath);
     hFile.Close();
 
     auto arch = GetPeArch(arg1w.c_str());
@@ -123,7 +121,7 @@ bool cbDebugInit(int argc, char* argv[])
         strcpy_s(arg3, argv[3]);
 
     static char currentfolder[deflen] = "";
-    strcpy_s(currentfolder, arg1);
+    strcpy_s(currentfolder, processPath);
     int len = (int)strlen(currentfolder);
     while(currentfolder[len] != '\\' && len != 0)
         len--;
@@ -132,12 +130,31 @@ bool cbDebugInit(int argc, char* argv[])
     if(DirExists(arg3))
         strcpy_s(currentfolder, arg3);
 
+    static char arg1[deflen] = "";
+    if(hDebugLoopThread != nullptr)
+    {
+        // Consider this a restart if we are launching the same process again.
+        bRestartingProcess = _stricmp(arg1, processPath) == 0;
+    }
+    else
+    {
+        // No active process, not a restart.
+        bRestartingProcess = false;
+    }
+    strcpy_s(arg1, processPath);
+
     static INIT_STRUCT init;
     memset(&init, 0, sizeof(INIT_STRUCT));
     init.exe = arg1;
     init.commandline = commandline;
     if(*currentfolder)
         init.currentfolder = currentfolder;
+
+    EXCLUSIVE_ACQUIRE(LockDebugStartStop);
+    StopFromInit = true;
+    cbDebugStop(argc, argv);
+    StopFromInit = false;
+    ASSERT_TRUE(hDebugLoopThread == nullptr);
 
     hDebugLoopThread = CreateThread(nullptr, 0, threadDebugLoop, &init, CREATE_SUSPENDED, nullptr);
     ResumeThread(hDebugLoopThread);
@@ -152,6 +169,10 @@ bool cbDebugStop(int argc, char* argv[])
 
     auto hDebugLoopThreadCopy = hDebugLoopThread;
     hDebugLoopThread = nullptr;
+
+    // If this is not called from cbDebugInit, not a restarting process.
+    if(!StopFromInit)
+        bRestartingProcess = false;
 
     // HACK: TODO: Don't kill script on debugger ending a process
     //scriptreset(); //reset the currently-loaded script
@@ -242,7 +263,7 @@ bool cbDebugAttach(int argc, char* argv[])
         dprintf(QT_TRANSLATE_NOOP("DBG", "Could not get module filename %X!\n"), DWORD(pid));
         return false;
     }
-    if(argc > 2) //event handle (JIT)
+    if(argc > 2)   //event handle (JIT)
     {
         duint eventHandle = 0;
         if(!valfromstring(argv[2], &eventHandle, false))
@@ -250,7 +271,7 @@ bool cbDebugAttach(int argc, char* argv[])
         if(eventHandle)
             dbgsetattachevent((HANDLE)eventHandle);
     }
-    if(argc > 3) //thread id to resume (PLMDebug)
+    if(argc > 3)   //thread id to resume (PLMDebug)
     {
         duint tid = 0;
         if(!valfromstring(argv[3], &tid, false))
@@ -368,7 +389,7 @@ bool cbDebugStepInto(int argc, char* argv[])
     duint steprepeat = 1;
     if(argc > 1 && !valfromstring(argv[1], &steprepeat, false))
         return false;
-    if(!steprepeat) //nothing to be done
+    if(!steprepeat)   //nothing to be done
         return true;
     if(skipInt3Stepping(1, argv) && !--steprepeat)
         return true;
@@ -396,7 +417,7 @@ bool cbDebugStepOver(int argc, char* argv[])
     duint steprepeat = 1;
     if(argc > 1 && !valfromstring(argv[1], &steprepeat, false))
         return false;
-    if(!steprepeat) //nothing to be done
+    if(!steprepeat)   //nothing to be done
         return true;
     if(skipInt3Stepping(1, argv) && !--steprepeat)
         return true;
@@ -424,7 +445,7 @@ bool cbDebugStepOut(int argc, char* argv[])
     duint steprepeat = 1;
     if(argc > 1 && !valfromstring(argv[1], &steprepeat, false))
         return false;
-    if(!steprepeat) //nothing to be done
+    if(!steprepeat)   //nothing to be done
         return true;
     HistoryClear();
     mRtrPreviousCSP = GetContextDataEx(hActiveThread, UE_CSP);

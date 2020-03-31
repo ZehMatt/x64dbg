@@ -38,7 +38,7 @@
 #include "debugger_tracing.h"
 
 // Debugging variables
-static PROCESS_INFORMATION g_pi = {0, 0, 0, 0};
+static PROCESS_INFORMATION g_pi = { 0, 0, 0, 0 };
 static char szBaseFileName[MAX_PATH] = "";
 static TraceState traceState;
 static bool bFileIsDll = false;
@@ -88,6 +88,7 @@ bool bVerboseExceptionLogging = true;
 bool bNoWow64SingleStepWorkaround = false;
 bool bTraceBrowserNeedsUpdate = false;
 bool bForceLoadSymbols = false;
+bool bRestartingProcess = false;
 duint DbgEvents = 0;
 duint maxSkipExceptionCount = 10000;
 HANDLE mProcHandle;
@@ -514,7 +515,7 @@ void DebugUpdateGui(duint disasm_addr, bool stack)
     if(csp != cacheCsp)
     {
 #ifdef _WIN64
-        InterlockedExchange((volatile unsigned long long*)&cacheCsp, csp);
+        InterlockedExchange((volatile unsigned long long*) & cacheCsp, csp);
 #else
         InterlockedExchange((volatile unsigned long*)&cacheCsp, csp);
 #endif //_WIN64
@@ -600,7 +601,7 @@ static void printSoftBpInfo(const BREAKPOINT & bp)
 static void printHwBpInfo(const BREAKPOINT & bp)
 {
     const char* bpsize = "";
-    switch(TITANGETSIZE(bp.titantype)) //size
+    switch(TITANGETSIZE(bp.titantype))    //size
     {
     case UE_HARDWARE_SIZE_1:
         bpsize = "byte, ";
@@ -618,7 +619,7 @@ static void printHwBpInfo(const BREAKPOINT & bp)
 #endif //_WIN64
     }
     char* bptype;
-    switch(TITANGETTYPE(bp.titantype)) //type
+    switch(TITANGETTYPE(bp.titantype))    //type
     {
     case UE_HARDWARE_EXECUTE:
         bptype = _strdup(GuiTranslateText(QT_TRANSLATE_NOOP("DBG", "execute")));
@@ -724,9 +725,9 @@ static void printExceptionBpInfo(const BREAKPOINT & bp, duint CIP)
 static bool getConditionValue(const char* expression)
 {
     auto word = *(uint16*)expression;
-    if(word == '0') // short circuit for condition "0\0"
+    if(word == '0')    // short circuit for condition "0\0"
         return false;
-    if(word == '1') //short circuit for condition "1\0"
+    if(word == '1')    //short circuit for condition "1\0"
         return true;
     duint value;
     if(valfromstring(expression, &value))
@@ -830,7 +831,7 @@ static void cbGenericBreakpoint(BP_TYPE bptype, void* ExceptionAddress = nullptr
         break;
     }
     varset("$breakpointexceptionaddress", breakpointExceptionAddress, true);
-    if(!(bpPtr && bpPtr->enabled)) //invalid / disabled breakpoint hit (most likely a bug)
+    if(!(bpPtr && bpPtr->enabled))    //invalid / disabled breakpoint hit (most likely a bug)
     {
         if(bptype != BPDLL || !BpUpdateDllPath(reinterpret_cast<const char*>(ExceptionAddress), &bpPtr))
         {
@@ -871,7 +872,7 @@ static void cbGenericBreakpoint(BP_TYPE bptype, void* ExceptionAddress = nullptr
         breakCondition = getConditionValue(bp.breakCondition);
     else
         breakCondition = true; //break if no condition is set
-    if(bp.fastResume && !breakCondition) // fast resume: ignore GUI/Script/Plugin/Other if the debugger would not break
+    if(bp.fastResume && !breakCondition)    // fast resume: ignore GUI/Script/Plugin/Other if the debugger would not break
         return;
     if(*bp.logCondition)
         logCondition = getConditionValue(bp.logCondition);
@@ -901,11 +902,11 @@ static void cbGenericBreakpoint(BP_TYPE bptype, void* ExceptionAddress = nullptr
     // Update breakpoint view
     DebugUpdateBreakpointsViewAsync();
 
-    if(*bp.logText && logCondition) //log
+    if(*bp.logText && logCondition)    //log
     {
         dprintf_untranslated("%s\n", stringformatinline(bp.logText).c_str());
     }
-    if(*bp.commandText && commandCondition) //command
+    if(*bp.commandText && commandCondition)    //command
     {
         //TODO: commands like run/step etc will fuck up your shit
         varset("$breakpointcondition", breakCondition ? 1 : 0, false);
@@ -923,7 +924,7 @@ static void cbGenericBreakpoint(BP_TYPE bptype, void* ExceptionAddress = nullptr
                 breakCondition = false;
         }
     }
-    if(breakCondition) //break the debugger
+    if(breakCondition)    //break the debugger
     {
         dbgsetforeground();
         dbgsetskipexceptions(false);
@@ -1210,11 +1211,11 @@ void cbRtrStep()
     MemRead(cip, &ch, 1);
     if(bTraceRecordEnabledDuringTrace)
         _dbg_dbgtraceexecute(cip);
-    if(mRtrPreviousCSP <= csp) //"Run until return" should break only if RSP is bigger than or equal to current value
+    if(mRtrPreviousCSP <= csp)    //"Run until return" should break only if RSP is bigger than or equal to current value
     {
-        if(ch == 0xC3 || ch == 0xC2) //retn instruction
+        if(ch == 0xC3 || ch == 0xC2)    //retn instruction
             cbRtrFinalStep(true);
-        else if(ch == 0x26 || ch == 0x36 || ch == 0x2e || ch == 0x3e || (ch >= 0x64 && ch <= 0x67) || ch == 0xf2 || ch == 0xf3 //instruction prefixes
+        else if(ch == 0x26 || ch == 0x36 || ch == 0x2e || ch == 0x3e || (ch >= 0x64 && ch <= 0x67) || ch == 0xf2 || ch == 0xf3    //instruction prefixes
 #ifdef _WIN64
                 || (ch >= 0x40 && ch <= 0x4f)
 #endif //_WIN64
@@ -1243,18 +1244,18 @@ static void cbTraceUniversalConditionalStep(duint cip, bool bStepInto, void(*cal
     PLUG_CB_TRACEEXECUTE info;
     info.cip = cip;
     auto breakCondition = (info.stop = traceState.BreakTrace() || forceBreakTrace);
-    if(traceState.IsExtended()) //only set when needed
+    if(traceState.IsExtended())    //only set when needed
         varset("$tracecounter", traceState.StepCount(), true);
     plugincbcall(CB_TRACEEXECUTE, &info);
     breakCondition = info.stop;
     auto logCondition = traceState.EvaluateLog(true);
     auto cmdCondition = traceState.EvaluateCmd(breakCondition);
     auto switchCondition = traceState.EvaluateSwitch(false);
-    if(logCondition) //log
+    if(logCondition)    //log
     {
         traceState.LogWrite(stringformatinline(traceState.LogText()));
     }
-    if(cmdCondition) //command
+    if(cmdCondition)    //command
     {
         //TODO: commands like run/step etc will fuck up your shit
         varset("$tracecondition", breakCondition ? 1 : 0, false);
@@ -1267,7 +1268,7 @@ static void cbTraceUniversalConditionalStep(duint cip, bool bStepInto, void(*cal
         if(varget("$traceswitchcondition", &script_breakcondition, nullptr, nullptr))
             switchCondition = script_breakcondition != 0;
     }
-    if(breakCondition || traceState.ForceBreakTrace()) //break the debugger
+    if(breakCondition || traceState.ForceBreakTrace())    //break the debugger
     {
         auto steps = dbgcleartracestate();
         varset("$tracecounter", steps, true);
@@ -1282,7 +1283,7 @@ static void cbTraceUniversalConditionalStep(duint cip, bool bStepInto, void(*cal
     {
         if(bTraceRecordEnabledDuringTrace)
             _dbg_dbgtraceexecute(cip);
-        if(switchCondition) //switch (invert) the step type once
+        if(switchCondition)    //switch (invert) the step type once
             bStepInto = !bStepInto;
         (bStepInto ? StepIntoWow64 : StepOverWrapper)((void*)callback);
     }
@@ -1378,7 +1379,7 @@ static void cbCreateProcess(CREATE_PROCESS_DEBUG_INFO* CreateProcessInfo)
     pCreateProcessBase = (duint)CreateProcessInfo->lpBaseOfImage;
     pDebuggedBase = pCreateProcessBase; //debugged base = executable
     DbCheckHash(ModContentHashFromAddr(pDebuggedBase)); //Check hash mismatch
-    if(!bFileIsDll && !bIsAttached) //Set entry breakpoint
+    if(!bFileIsDll && !bIsAttached)    //Set entry breakpoint
     {
         char command[deflen] = "";
 
@@ -1411,7 +1412,7 @@ static void cbCreateProcess(CREATE_PROCESS_DEBUG_INFO* CreateProcessInfo)
 
         bTraceRecordEnabledDuringTrace = settingboolget("Engine", "TraceRecordEnabledDuringTrace");
     }
-    else if(bFileIsDll && strstr(DebugFileName, "DLLLoader" ArchValue("32", "64"))) //DLL Loader
+    else if(bFileIsDll && strstr(DebugFileName, "DLLLoader" ArchValue("32", "64")))    //DLL Loader
         gDllLoader = StringUtils::Utf8ToUtf16(DebugFileName);
 
     DebugUpdateBreakpointsViewAsync();
@@ -1575,7 +1576,7 @@ static void cbExitThread(EXIT_THREAD_DEBUG_INFO* ExitThread)
 static DWORD WINAPI cbInitializationScriptThread(void*)
 {
     Memory<char*> script(MAX_SETTING_SIZE + 1);
-    if(BridgeSettingGet("Engine", "InitializeScript", script())) // Global script file
+    if(BridgeSettingGet("Engine", "InitializeScript", script()))    // Global script file
     {
         if(scriptLoadSync(script()))
         {
@@ -1672,7 +1673,7 @@ static void cbLoadDll(LOAD_DLL_DEBUG_INFO* LoadDll)
 
     char command[MAX_PATH * 2] = "";
     bool bIsDebuggingThis = false;
-    if(bFileIsDll && !_stricmp(DLLDebugFileName, szFileName) && !bIsAttached) //Set entry breakpoint
+    if(bFileIsDll && !_stricmp(DLLDebugFileName, szFileName) && !bIsAttached)    //Set entry breakpoint
     {
         bIsDebuggingThis = true;
         pDebuggedBase = (duint)base;
@@ -1827,13 +1828,13 @@ static void cbOutputDebugString(OUTPUT_DEBUG_STRING_INFO* DebugString)
     callbackInfo.DebugString = DebugString;
     plugincbcall(CB_OUTPUTDEBUGSTRING, &callbackInfo);
 
-    if(!DebugString->fUnicode) //ASCII
+    if(!DebugString->fUnicode)    //ASCII
     {
         Memory<char*> DebugText(DebugString->nDebugStringLength + 1, "cbOutputDebugString:DebugText");
         if(MemRead((duint)DebugString->lpDebugStringData, DebugText(), DebugString->nDebugStringLength))
         {
             String str = String(DebugText());
-            if(str != lastDebugText) //fix for every string being printed twice
+            if(str != lastDebugText)    //fix for every string being printed twice
             {
                 if(str != "\n")
                     dprintf(QT_TRANSLATE_NOOP("DBG", "DebugString: \"%s\"\n"), StringUtils::Trim(StringUtils::Escape(str, false)).c_str());
@@ -1915,13 +1916,13 @@ static void cbException(EXCEPTION_DEBUG_INFO* ExceptionData)
         }
         SetContextDataEx(hActiveThread, UE_CIP, (duint)ExceptionData->ExceptionRecord.ExceptionAddress);
     }
-    else if(ExceptionData->ExceptionRecord.ExceptionCode == MS_VC_EXCEPTION) //SetThreadName exception
+    else if(ExceptionData->ExceptionRecord.ExceptionCode == MS_VC_EXCEPTION)    //SetThreadName exception
     {
         THREADNAME_INFO nameInfo; //has no valid local pointers
         memcpy(&nameInfo, ExceptionData->ExceptionRecord.ExceptionInformation, sizeof(THREADNAME_INFO));
-        if(nameInfo.dwThreadID == -1) //current thread
+        if(nameInfo.dwThreadID == -1)    //current thread
             nameInfo.dwThreadID = ((DEBUG_EVENT*)GetDebugData())->dwThreadId;
-        if(nameInfo.dwType == 0x1000 && nameInfo.dwFlags == 0 && ThreadIsValid(nameInfo.dwThreadID)) //passed basic checks
+        if(nameInfo.dwType == 0x1000 && nameInfo.dwFlags == 0 && ThreadIsValid(nameInfo.dwThreadID))    //passed basic checks
         {
             Memory<char*> ThreadName(MAX_THREAD_NAME_SIZE, "cbException:ThreadName");
             if(MemRead((duint)nameInfo.szName, ThreadName(), MAX_THREAD_NAME_SIZE - 1))
@@ -1935,9 +1936,9 @@ static void cbException(EXCEPTION_DEBUG_INFO* ExceptionData)
     if(bVerboseExceptionLogging)
         DbgCmdExecDirect("exinfo"); //show extended exception information
     auto exceptionName = ExceptionCodeToName(ExceptionCode);
-    if(!exceptionName.size()) //if no exception was found, try the error codes (RPC_S_*)
+    if(!exceptionName.size())    //if no exception was found, try the error codes (RPC_S_*)
         exceptionName = ErrorCodeToName(ExceptionCode);
-    if(ExceptionData->dwFirstChance) //first chance exception
+    if(ExceptionData->dwFirstChance)    //first chance exception
     {
         if(exceptionName.size())
             dprintf(QT_TRANSLATE_NOOP("DBG", "First chance exception on %p (%.8X, %s)!\n"), addr, ExceptionCode, exceptionName.c_str());
@@ -1980,13 +1981,13 @@ static void cbDebugEvent(DEBUG_EVENT* DebugEvent)
 
 static void cbAttachDebugger()
 {
-    if(hEvent) //Signal the AeDebug event
+    if(hEvent)    //Signal the AeDebug event
     {
         SetEvent(hEvent);
         CloseHandle(hEvent);
         hEvent = 0;
     }
-    if(tidToResume) //Resume a thread
+    if(tidToResume)    //Resume a thread
     {
         cmddirectexec(StringUtils::sprintf("resumethread %p", tidToResume).c_str());
         tidToResume = 0;
@@ -2056,7 +2057,7 @@ BOOL CALLBACK chkWindowPidCallback(HWND hWnd, LPARAM lParam)
     GetWindowThreadProcessId(hWnd, &hwndPid);
     if(hwndPid == procId)
     {
-        if(!mForegroundHandle)  // get the foreground if no owner visible
+        if(!mForegroundHandle)     // get the foreground if no owner visible
             mForegroundHandle = hWnd;
 
         if(ismainwindow(hWnd))
@@ -2081,21 +2082,21 @@ bool dbggetwintext(std::vector<std::string>* winTextList, const DWORD dwProcessI
     wchar_t limitedbuffer[256];
     limitedbuffer[255] = 0;
 
-    if(mProcHandle)  // get info from the "main window" (GW_OWNER + visible)
+    if(mProcHandle)     // get info from the "main window" (GW_OWNER + visible)
     {
         if(!GetWindowTextW((HWND)mProcHandle, limitedbuffer, 256))
             GetClassNameW((HWND)mProcHandle, limitedbuffer, 256); // go for the class name if none of the above
     }
-    else if(mForegroundHandle)  // get info from the foreground window
+    else if(mForegroundHandle)     // get info from the foreground window
     {
         if(!GetWindowTextW((HWND)mForegroundHandle, limitedbuffer, 256))
             GetClassNameW((HWND)mForegroundHandle, limitedbuffer, 256); // go for the class name if none of the above
     }
 
 
-    if(limitedbuffer[255] != 0)  //Window title too long. Add "..." to the end of buffer.
+    if(limitedbuffer[255] != 0)     //Window title too long. Add "..." to the end of buffer.
     {
-        if(limitedbuffer[252] < 0xDC00 || limitedbuffer[252] > 0xDFFF)  //protect the last surrogate of UTF-16 surrogate pair
+        if(limitedbuffer[252] < 0xDC00 || limitedbuffer[252] > 0xDFFF)     //protect the last surrogate of UTF-16 surrogate pair
             limitedbuffer[252] = L'.';
         limitedbuffer[253] = L'.';
         limitedbuffer[254] = L'.';
@@ -2120,7 +2121,7 @@ bool dbglistprocesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::st
     {
         if(pe32.th32ProcessID == GetCurrentProcessId())
             continue;
-        if(pe32.th32ProcessID == 0 || pe32.th32ProcessID == 4) // System process and Idle process have special PID.
+        if(pe32.th32ProcessID == 0 || pe32.th32ProcessID == 4)    // System process and Idle process have special PID.
             continue;
         Handle hProcess = TitanOpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pe32.th32ProcessID);
         if(!hProcess)
@@ -2164,9 +2165,9 @@ bool dbglistprocesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::st
 
                     char* nextSlash = strchr(exeNameInCmdTmp, '\\') ? strchr(exeNameInCmdTmp, '\\') :
                                       strchr(exeNameInCmdTmp, '/') ? strchr(exeNameInCmdTmp, '/') : NULL;
-                    if(nextSlash && posEnum.posEnum == NO_QOUTES) //if there NO_QOUTES, then the path to PE in cmdline can't contain spaces
+                    if(nextSlash && posEnum.posEnum == NO_QOUTES)    //if there NO_QOUTES, then the path to PE in cmdline can't contain spaces
                     {
-                        if(strchr(exeNameInCmdTmp, ' ') < nextSlash) //slash is in arguments
+                        if(strchr(exeNameInCmdTmp, ' ') < nextSlash)    //slash is in arguments
                         {
                             peNameInCmd = exeNameInCmdTmp;
                             break;
@@ -2176,7 +2177,7 @@ bool dbglistprocesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::st
                     }
                     else if(nextSlash && posEnum.posEnum == QOUTES_AROUND_EXE)
                     {
-                        if((cmdline + posEnum.secondPos) < nextSlash) //slash is in arguments
+                        if((cmdline + posEnum.secondPos) < nextSlash)    //slash is in arguments
                         {
                             peNameInCmd = exeNameInCmdTmp;
                             break;
@@ -2211,9 +2212,9 @@ bool dbglistprocesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::st
 
                         char* nextSlash = strchr(basicNameInCmdTmp, '\\') ? strchr(basicNameInCmdTmp, '\\') :
                                           strchr(basicNameInCmdTmp, '/') ? strchr(basicNameInCmdTmp, '/') : NULL;
-                        if(nextSlash && posEnum.posEnum == NO_QOUTES) //if there NO_QOUTES, then the path to PE in cmdline can't contain spaces
+                        if(nextSlash && posEnum.posEnum == NO_QOUTES)    //if there NO_QOUTES, then the path to PE in cmdline can't contain spaces
                         {
-                            if(strchr(basicNameInCmdTmp, ' ') < nextSlash) //slash is in arguments
+                            if(strchr(basicNameInCmdTmp, ' ') < nextSlash)    //slash is in arguments
                             {
                                 peNameInCmd = basicNameInCmdTmp;
                                 break;
@@ -2223,7 +2224,7 @@ bool dbglistprocesses(std::vector<PROCESSENTRY32>* infoList, std::vector<std::st
                         }
                         else if(nextSlash && posEnum.posEnum == QOUTES_AROUND_EXE)
                         {
-                            if((cmdline + posEnum.secondPos) < nextSlash) //slash is in arguments
+                            if((cmdline + posEnum.secondPos) < nextSlash)    //slash is in arguments
                             {
                                 peNameInCmd = basicNameInCmdTmp;
                                 break;
@@ -2318,7 +2319,7 @@ static bool patchcmdline(duint getcommandline, duint new_command_line, cmdline_e
     unsigned char data[100];
 
     cmd_line_error->addr = getcommandline;
-    if(!MemRead(cmd_line_error->addr, & data, sizeof(data)))
+    if(!MemRead(cmd_line_error->addr, &data, sizeof(data)))
     {
         cmd_line_error->type = CMDL_ERR_READ_GETCOMMANDLINEBASE;
         return false;
@@ -2331,24 +2332,24 @@ static bool patchcmdline(duint getcommandline, duint new_command_line, cmdline_e
     This is a relative offset then to get the symbol: next instruction of getmodulehandle (+7 bytes) + offset to symbol
     (the last 4 bytes of the instruction)
     */
-    if(data[0] != 0x48 ||  data[1] != 0x8B || data[2] != 0x05 || data[7] != 0xC3)
+    if(data[0] != 0x48 || data[1] != 0x8B || data[2] != 0x05 || data[7] != 0xC3)
     {
         cmd_line_error->type = CMDL_ERR_CHECK_GETCOMMANDLINESTORED;
         return false;
     }
-    DWORD offset = * ((DWORD*) & data[3]);
+    DWORD offset = *((DWORD*)&data[3]);
     command_line_stored = getcommandline + 7 + offset;
 #else //x86
     /*
     750FE9CA | A1 CC DB 1A 75           | mov eax,dword ptr ds:[751ADBCC]         |
     750FE9CF | C3                       | ret                                     |
     */
-    if(data[0] != 0xA1 ||  data[5] != 0xC3)
+    if(data[0] != 0xA1 || data[5] != 0xC3)
     {
         cmd_line_error->type = CMDL_ERR_CHECK_GETCOMMANDLINESTORED;
         return false;
     }
-    command_line_stored = * ((duint*) & data[1]);
+    command_line_stored = *((duint*)&data[1]);
 #endif
 
     //update the pointer in the debuggee
@@ -2417,7 +2418,7 @@ bool dbgsetcmdline(const char* cmd_line, cmdline_error_t* cmd_line_error)
 
     // Convert the string to UTF-16
     auto command_linewstr = StringUtils::Utf8ToUtf16(cmd_line);
-    if(command_linewstr.length() >= 32766) //32766 is maximum character count for a null-terminated UNICODE_STRING
+    if(command_linewstr.length() >= 32766)    //32766 is maximum character count for a null-terminated UNICODE_STRING
         command_linewstr.resize(32766);
     // Convert the UTF-16 string to ANSI
     auto command_linestr = Utf16ToAnsi(command_linewstr.c_str());
@@ -2705,7 +2706,10 @@ static void debugLoopFunction(void* lpParameter, bool attach)
     }
 
     // Init program database
-    DbLoad(DbLoadSaveType::DebugData);
+    if(!bRestartingProcess)
+        DbLoad(DbLoadSaveType::DebugData);
+    else
+        dprintf("Re-using database from last session\n");
 
     //run debug loop (returns when process debugging is stopped)
     if(attach)
@@ -2726,7 +2730,11 @@ static void debugLoopFunction(void* lpParameter, bool attach)
     }
 
     //fixes data loss when attach failed (https://github.com/x64dbg/x64dbg/issues/1899)
-    DbClose();
+    if(!attach && !bRestartingProcess)
+    {
+        dputs("Keeping database open, restart requested.\n");
+        DbClose();
+    }
 
     //call plugin callback
     PLUG_CB_STOPDEBUG stopInfo;
@@ -2765,7 +2773,7 @@ static void debugLoopFunction(void* lpParameter, bool attach)
     pCreateProcessBase = 0;
     isDetachedByUser = false;
     hActiveThread = nullptr;
-    if(!gDllLoader.empty()) //Delete the DLL loader (#1496)
+    if(!gDllLoader.empty())    //Delete the DLL loader (#1496)
     {
         DeleteFileW(gDllLoader.c_str());
         gDllLoader.clear();
@@ -2828,7 +2836,7 @@ void StepIntoWow64(LPVOID traceCallBack)
     {
         unsigned char data[7];
         auto cip = GetContextDataEx(hActiveThread, UE_CIP);
-        if(MemRead(cip, data, sizeof(data)) && data[0] == 0xEA && data[5] == 0x33 && data[6] == 0x00) //ljmp 33,XXXXXXXX
+        if(MemRead(cip, data, sizeof(data)) && data[0] == 0xEA && data[5] == 0x33 && data[6] == 0x00)    //ljmp 33,XXXXXXXX
         {
             auto csp = GetContextDataEx(hActiveThread, UE_CSP);
             duint ret;
